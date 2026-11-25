@@ -1,0 +1,72 @@
+# Evaluate a ThinkMorph-SSL checkpoint on the paper's 13 displayed columns.
+#
+#   bash eval/run_eval.sh configs/eval/ssl.yaml
+#
+# Exactly one of `model_path` or `checkpoint` is needed:
+#   model_path   a merged checkpoint (for example the released ThinkMorph-SSL weights)
+#   checkpoint   a raw FSDP2 checkpoint directory from training; it is merged
+#                into merged_dir first (checkpoint_type: ema for EMA weights)
+#
+# ${VAR} references are expanded from the environment.
+
+model_name: thinkmorph_ssl_instruct
+model_path: ${SSL_MODEL_DIR}
+# checkpoint: outputs/stage2_instruct/checkpoints/checkpoint-5500
+# checkpoint_type: ema
+# merged_dir: outputs/stage2_instruct/merged/checkpoint-5500-ema
+
+# Needed only with `checkpoint`: fills weights that are absent from the EMA state
+# (the frozen VAE) when merging.
+# base_model: ${BAGEL_MODEL_DIR}
+
+# The system prompt is read from the training config so that evaluation uses
+# exactly the prompt the model was trained with.
+training_config: configs/train/stage2_instruct.yaml
+
+benchmarks:
+  # L1: visible evidence
+  - VStarBench
+  - HRBench4K
+  - HRBench8K
+  - MME-RealWorld-Lite
+  - RealWorldQA
+  # L2: spatial structure
+  - BLINK
+  - CV-Bench-2D
+  - CV-Bench-3D
+  - SAT_circular
+  # L3: scene reconstruction
+  - MMSI
+  - MindCubeBench_tiny_raw_qa
+  - OmniSpatialBench
+  - SpatialVizBench
+
+# Text decoding is greedy. text_temperature only applies when do_sample is true.
+#
+# The remaining inference settings are fixed in
+# eval/VLMEvalKit/vlmeval/vlm/ThinkMorphInterleaved.py and are the ones behind
+# the paper's numbers:
+#   text segment    at most 1024 tokens between two generated images (max_turn_text_tokens)
+#   ViT input       ImageTransform(980, 224, 14): max side 980, min side 224, patch 14
+#   VAE input       ImageTransform(1024, 512, 16)
+#   generated image 512 x 512 unless the model declares another size
+#   image CFG       cfg_text_scale 3.0, cfg_img_scale 1.5, cfg_interval [0.4, 1.0],
+#                   cfg_renorm_type global, cfg_renorm_min 1.0, timestep_shift 3.0
+# Generated images are fed back as both VAE and ViT context for the next step.
+inference:
+  ngpus: 8
+  do_sample: false
+  text_temperature: 0.3
+  num_timesteps: 50
+  max_think_token_n: 16384
+
+# LLM judge. MMSI, MindCubeBench_tiny_raw_qa, OmniSpatialBench and SpatialVizBench
+# grade every response with it. The other benchmarks match the chosen option by
+# rule and ask the judge only when matching fails. Needs OPENAI_API_KEY (and
+# OPENAI_API_BASE for an OpenAI-compatible endpoint). If the judge cannot be
+# reached, the spatial evaluator warns and falls back to rule-based scoring,
+# which gives different numbers: check the log for "fallback to rule-based".
+judge: gpt-5
+
+master_port: 22712
+output_dir: outputs/eval/thinkmorph_ssl_instruct

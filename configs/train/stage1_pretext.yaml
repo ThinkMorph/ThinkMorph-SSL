@@ -1,0 +1,157 @@
+# Stage 1: pretext training on Pretext-270K.
+#
+# Starts from BAGEL-7B-MoT. Paper setting: 4 nodes x 8 GPUs (world size 32).
+# The learning rate 2.83e-5 is the sqrt(2) scaling of a 2e-5 base for 32 GPUs.
+# Dynamic packing means steps do not directly determine sample exposure.
+# A different world size needs measured token/sample accounting; it is not
+# an equivalent reproduction simply by rescaling steps or learning rate.
+#
+# The reported Stage 2 run starts from the EMA weights of this run at step 5500.
+# The learning rate follows a cosine schedule over max_steps (10000) after 1000
+# warmup steps; keep max_steps at 10000 even if you stop after step 5500.
+#
+# Rows whose images come from Matterport3D or Ego-Exo4D (text_only/, see
+# data/README.md) were part of the paper run.
+#
+# Environment variables (expanded by scripts/train.sh):
+#   BAGEL_MODEL_DIR  local copy of the base model
+#   DATA_ROOT        directory that contains ssl-pretext-270k/
+
+trainer_type: bagel_fsdp2_trainer
+
+dataset_config:
+  dataset_type: bagel_iterable
+  dataset_format: jsonl
+  jsonl_mode: reasoning_columns
+  # Pretext traces have no question text. Keep this false, otherwise every
+  # sample is dropped.
+  filter_missing_text: false
+  stages:
+    - dataset_folders:
+        # One folder per task (visual operation) in the restored release (data/README.md).
+        - ${DATA_ROOT}/ssl-pretext-270k/colorization
+        - ${DATA_ROOT}/ssl-pretext-270k/deformation_recovery
+        - ${DATA_ROOT}/ssl-pretext-270k/denoising
+        - ${DATA_ROOT}/ssl-pretext-270k/jigsaw
+        - ${DATA_ROOT}/ssl-pretext-270k/masked_inpainting
+        - ${DATA_ROOT}/ssl-pretext-270k/orthogonal_transform
+        - ${DATA_ROOT}/ssl-pretext-270k/super_resolution
+        # Rows released without images (text_only/); add after placing the images:
+        # - ${DATA_ROOT}/ssl-pretext-270k-text-only/jigsaw
+      max_steps: 10000
+  use_action_control_system_prompt: true
+  action_control_system_prompt: |-
+    Use <think>...</think> for intermediate reasoning or planning.
+
+    To generate an image, write <gen_image> followed by an image-size declaration:
+      <gen_image>[Image size: (height, width)]
+    Generated images become part of your context and can inform subsequent reasoning. You may generate more than one image if needed.
+
+    If the task requires a final textual answer, wrap it in <answer>...</answer>.
+    If no textual answer is needed, the response may end after reasoning or image generation.
+
+    Example:
+      <think>reasoning step</think>
+      <gen_image>[Image size: (512, 512)]
+      <think>observe and reason about the generated image</think>
+      <answer>final answer</answer>
+  wrap_assistant_reasoning_with_think: true
+  packing_mode: dynamic
+  max_num_tokens: 16384
+  stride_sharding: true
+
+  processor_config:
+    processor_name: ${BAGEL_MODEL_DIR}
+    processor_type: bagel
+    extra_kwargs:
+      vae_max_image_size: 1024
+      vae_min_image_size: 128
+      image_action_token: "<gen_image>"
+      register_action_token: true
+      supervise_image_action_token: true
+      action_token_ce_loss_weight: 1.0
+      reweight_action_suffix_tokens: true
+      enable_ref_image: false
+      enable_size_tokens: true
+      vae_cond_dropout_prob: 0.3
+      vit_cond_dropout_prob: 0
+      text_cond_dropout_prob: 0
+
+trainer_args:
+  output_dir: outputs/stage1_pretext/checkpoints
+  overwrite_output_dir: false
+  run_name: stage1_pretext
+  project: ssl
+
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 2.83e-05
+  lr_scheduler_type: cosine
+  warmup_steps: 1000
+
+  save_strategy: steps
+  save_steps: 500
+  save_safetensors: true
+  checkpoint_async_mode: false
+  # 10 checkpoints = steps 5500..10000 at save_steps 500, so step 5500 survives
+  # a full run. Do not lower this without saving step 5500 elsewhere.
+  checkpoint_keep_latest_k: 10
+  save_only_model: true
+
+  ddp_timeout: 3600
+
+  dataloader_drop_last: true
+  dataloader_num_workers: 4
+  dataloader_prefetch_factor: 2
+  dataloader_pin_memory: true
+  dataloader_persistent_workers: true
+
+  gradient_checkpointing: false
+  use_tm_activation_checkpoint: true
+  compile_model: false
+  compile_loss: false
+  activation_offloading: false
+  gc_enabled: false
+  gc_freq: 200
+
+  fsdp2: true
+  sp_ulysses_degree: 1
+  output_dtype: null
+  fsdp2_config:
+    transformer_layer_cls_to_wrap:
+      - Qwen2MoTDecoderLayer
+      - Qwen2DecoderLayer
+      - Qwen2MoEDecoderLayer
+      - SiglipEncoderLayer
+      - MLPconnector
+
+  # EMA shadow is kept in fp32.
+  ema_enabled: true
+  ema_master_dtype: fp32
+  ema_decay: 0.9998
+  ema_start_step: 1000
+  ema_update_every: 1
+  ema_requires_grad_only: true
+
+  inference_probe_config:
+    enabled: false
+
+  freeze_modules:
+    - vae_model
+
+model_config:
+  load_from_pretrained_path: ${BAGEL_MODEL_DIR}
+  load_from_config: null
+
+  attn_implementation: flash_attention_2
+  overwrite_config:
+    ce_loss_reweighting: true
+    mse_weight: 1.0
+
+  monkey_patch_kwargs:
+    patch_type: [liger]
+    rope: true
+    fused_linear_cross_entropy: true
+    rms_norm: true
+    swiglu: true

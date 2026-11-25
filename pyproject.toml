@@ -1,0 +1,104 @@
+[project]
+name = "bagel"
+version = "0.1.0"
+description = "Training and evaluation code for ThinkMorph-SSL"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "flash-attn",
+    "gradio>=5.0.0",
+    "hydra-core>=1.3.2",
+    "loguru>=0.7.3",
+    "pyyaml>=6.0.3",
+    "jsonlines>=4.0.0",
+    "pydantic>=2.12.5",
+    "transformers==4.57.1",
+    "accelerate>=1.12.0",
+    "opencv-python>=4.13.0.92",
+    "datasets>=4.5.0",
+    "torchdata>=0.11.0",
+    "wandb>=0.25.0",
+    "diffusers>=0.36.0",
+    "liger-kernel>=0.7.0",
+    "lpips>=0.1.4",
+    "ray>=2.54.0",
+    "rich>=12.0.0",
+]
+
+[project.scripts]
+bagel-train = "launch.cli:main"
+bagel-infer = "launch.inference_cli:main"
+bagel-gradio = "launch.gradio_app:main"
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]
+
+[tool.uv.workspace]
+members = [
+    ".",
+]
+
+[tool.ruff]
+exclude = [
+    "src/models",
+    "scripts",
+    "tests",
+]
+
+[tool.typos.files]
+extend-exclude = ["src/models"]
+
+[tool.ty.src]
+exclude = [
+    "src/models",
+]
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.rules]
+# torch.distributed and third-party libs have incomplete stubs for ty
+possibly-missing-attribute = "ignore"
+unresolved-attribute = "ignore"
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+invalid-parameter-default = "ignore"
+call-non-callable = "ignore"
+not-subscriptable = "ignore"
+unsupported-operator = "ignore"
+invalid-return-type = "ignore"
+no-matching-overload = "ignore"
+invalid-method-override = "ignore"
+not-iterable = "ignore"
+unknown-argument = "ignore"
+too-many-positional-arguments = "ignore"
+missing-argument = "ignore"
+redundant-cast = "ignore"
+unresolved-global = "ignore"
+
+[tool.ty.analysis]
+allowed-unresolved-imports = [
+    "matplotlib.**",
+    "deepspeed.**",
+    "sentencepiece.**",
+    "modeling.**",
+    "data.data_utils",
+    "utils.**",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.38.2",
+    "prek>=0.3.2",
+    "pytest>=9.0.2",
+    "ty>=0.0.19",
+]

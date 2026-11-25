@@ -1,0 +1,173 @@
+# Stage 2: instruction tuning on Instruct-180K.
+#
+# Starts from the Stage 1 EMA checkpoint at step 5500 (merged with
+# scripts/merge_checkpoint.py). Paper setting: 6 nodes x 8 GPUs (world size 48).
+# The released ThinkMorph-SSL model is the EMA checkpoint of this run at step 5500.
+#
+# The learning rate follows a cosine schedule over max_steps (12000) after 1000
+# warmup steps; the paper run was stopped after step 5500 was saved. Keep
+# max_steps at 12000 to reproduce that schedule: setting it to 5500 decays the
+# learning rate to zero by step 5500 and trains a different model.
+#
+# Rows whose images come from Matterport3D or Ego-Exo4D (text_only/, see
+# data/README.md) were part of the paper run. Without them this config trains on
+# a subset of the paper's Stage 2 data.
+#
+# Environment variables (expanded by scripts/train.sh):
+#   BAGEL_MODEL_DIR  local copy of the base model (tokenizer and processor)
+#   STAGE1_CKPT      merged Stage 1 EMA checkpoint
+#   DATA_ROOT        directory that contains ssl-instruct-180k/
+
+trainer_type: bagel_fsdp2_trainer
+
+dataset_config:
+  dataset_type: bagel_iterable
+  dataset_format: jsonl
+  jsonl_mode: reasoning_columns
+  filter_missing_text: true
+  require_reasoning_image_0_and_answer: true
+  include_val_in_training: true
+  stages:
+    - dataset_folders:
+        # One folder per task (visual operation chain) in the restored release (data/README.md).
+        - ${DATA_ROOT}/ssl-instruct-180k/bbox
+        - ${DATA_ROOT}/ssl-instruct-180k/birds_eye_view
+        - ${DATA_ROOT}/ssl-instruct-180k/birds_eye_view_rotation
+        - ${DATA_ROOT}/ssl-instruct-180k/crop
+        - ${DATA_ROOT}/ssl-instruct-180k/depth_map
+        - ${DATA_ROOT}/ssl-instruct-180k/jigsaw_multi_frame
+        - ${DATA_ROOT}/ssl-instruct-180k/jigsaw_single_image
+        - ${DATA_ROOT}/ssl-instruct-180k/marked_depth_map
+        - ${DATA_ROOT}/ssl-instruct-180k/marked_position_view
+        - ${DATA_ROOT}/ssl-instruct-180k/object_editing
+        - ${DATA_ROOT}/ssl-instruct-180k/object_orientation
+        - ${DATA_ROOT}/ssl-instruct-180k/object_rotation
+        - ${DATA_ROOT}/ssl-instruct-180k/object_segmentation
+        - ${DATA_ROOT}/ssl-instruct-180k/object_viewpoint_render
+        - ${DATA_ROOT}/ssl-instruct-180k/object_viewpoint_render_oriented
+        - ${DATA_ROOT}/ssl-instruct-180k/panoramic_completion
+        # Rows released without images (text_only/); add after placing the images:
+        # - ${DATA_ROOT}/ssl-instruct-180k-text-only/panoramic_completion
+        # - ${DATA_ROOT}/ssl-instruct-180k-text-only/exo_to_ego
+      max_steps: 12000
+  use_action_control_system_prompt: true
+  action_control_system_prompt: |-
+    Use <think>...</think> for intermediate reasoning or planning.
+
+    To generate an image, write <gen_image> followed by an image-size declaration:
+      <gen_image>[Image size: (height, width)]
+    Generated images become part of your context and can inform subsequent reasoning. You may generate more than one image if needed.
+
+    If the task requires a final textual answer, wrap it in <answer>...</answer>.
+    If no textual answer is needed, the response may end after reasoning or image generation.
+
+    Example:
+      <think>reasoning step</think>
+      <gen_image>[Image size: (512, 512)]
+      <think>observe and reason about the generated image</think>
+      <answer>final answer</answer>
+  wrap_assistant_reasoning_with_think: true
+  packing_mode: dynamic
+  max_num_tokens: 20480
+  stride_sharding: true
+  # Shrink generated (assistant) images when a trace would exceed the token
+  # budget, down to a 512 px floor.
+  adaptive_image_size_to_fit_budget: true
+  adaptive_image_size_safety_margin: 1.05
+  adaptive_image_size_floor: 512
+
+  processor_config:
+    processor_name: ${BAGEL_MODEL_DIR}
+    processor_type: bagel
+    extra_kwargs:
+      vae_max_image_size: 1024
+      vae_min_image_size: 128
+      image_action_token: "<gen_image>"
+      register_action_token: true
+      supervise_image_action_token: true
+      action_token_ce_loss_weight: 1.0
+      reweight_action_suffix_tokens: true
+      enable_ref_image: false
+      enable_size_tokens: true
+      vae_cond_dropout_prob: 0.3
+      vit_cond_dropout_prob: 0
+      text_cond_dropout_prob: 0
+
+trainer_args:
+  output_dir: outputs/stage2_instruct/checkpoints
+  overwrite_output_dir: false
+  run_name: stage2_instruct
+  project: ssl
+
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-05
+  lr_scheduler_type: cosine
+  warmup_steps: 1000
+
+  save_strategy: steps
+  save_steps: 500
+  save_safetensors: true
+  checkpoint_async_mode: true
+  # 14 checkpoints = steps 5500..12000 at save_steps 500, so the released step
+  # 5500 survives a full run. With 10, it is deleted when step 10500 is saved.
+  checkpoint_keep_latest_k: 14
+  save_only_model: true
+
+  ddp_timeout: 3600
+
+  dataloader_drop_last: true
+  dataloader_num_workers: 8
+  dataloader_prefetch_factor: 2
+  dataloader_pin_memory: true
+  dataloader_persistent_workers: true
+
+  gradient_checkpointing: false
+  use_tm_activation_checkpoint: true
+  compile_model: false
+  compile_loss: false
+  activation_offloading: false
+  gc_enabled: false
+  gc_freq: 200
+
+  fsdp2: true
+  sp_ulysses_degree: 1
+  output_dtype: null
+  fsdp2_config:
+    transformer_layer_cls_to_wrap:
+      - Qwen2MoTDecoderLayer
+      - Qwen2DecoderLayer
+      - Qwen2MoEDecoderLayer
+      - SiglipEncoderLayer
+      - MLPconnector
+
+  # EMA shadow is kept in fp32.
+  ema_enabled: true
+  ema_master_dtype: fp32
+  ema_decay: 0.9998
+  ema_start_step: 1000
+  ema_update_every: 1
+  ema_requires_grad_only: true
+
+  inference_probe_config:
+    enabled: false
+
+  freeze_modules:
+    - vae_model
+
+model_config:
+  load_from_pretrained_path: ${STAGE1_CKPT}
+  load_from_config: null
+
+  attn_implementation: flash_attention_2
+  overwrite_config:
+    ce_loss_reweighting: true
+    mse_weight: 1.0
+
+  monkey_patch_kwargs:
+    patch_type: [liger]
+    rope: true
+    fused_linear_cross_entropy: true
+    rms_norm: true
+    swiglu: true
